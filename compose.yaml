@@ -1,0 +1,29 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: agent-service/Dockerfile
+    env_file: agent-service/.env
+    environment:
+      AGENT_HOST: 0.0.0.0
+      AGENT_PORT: 9801
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9801/internal/ready', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  gateway:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: backend/.env
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 9800
+      AGENT_SERVICE_URL: http://agent:9801
+      TRUST_PROXY: "0"
+    ports: ["127.0.0.1:9800:9800"]
+    depends_on:
+      agent:
+        condition: service_healthy

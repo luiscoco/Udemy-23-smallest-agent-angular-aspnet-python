@@ -1,0 +1,162 @@
+[
+  {
+    "number": 1,
+    "title": "Run prompt",
+    "source": "frontend/src/app/lab-state.ts",
+    "line": 29,
+    "language": "typescript",
+    "text": "Trim and lock before asynchronous work.",
+    "explanation": "Root-provided Angular signal state preserves prompt, mode, results and timeline across all five lesson sections.",
+    "code": "const trimmed=this.prompt().trim();\nif(this.locked||!trimmed||trimmed.length>4000)return;\nthis.locked=true;this.status.set('running');this.error.set('');this.result.set(null);this.partial.set('');this.messages.set([]);this.notice.set('');\nconst controller=new AbortController();this.active=controller;const started=performance.now();this.elapsed.set(0);\nconst ticker=setInterval(()=>this.elapsed.set(Math.round(performance.now()-started)),100);\nconst timeout=setTimeout(()=>controller.abort(),195000);"
+  },
+  {
+    "number": 2,
+    "title": "POST to .NET gateway",
+    "source": "frontend/src/app/api.ts",
+    "line": 107,
+    "language": "typescript",
+    "text": "Send JSON to the browser-facing gateway.",
+    "explanation": "Angular uses the public same-origin /api routes. Development proxies to .NET and production .NET serves Angular. Neither server credential enters the browser.",
+    "code": "const response = await fetch(base + \"/api/agent/stream\", {\n  method: \"POST\",\n  headers: { \"Content-Type\": \"application/json\" },\n  body: JSON.stringify({ prompt }),\n  signal,\n});"
+  },
+  {
+    "number": 3,
+    "title": "Validate public request",
+    "source": "backend/GatewayApplication.cs",
+    "line": 67,
+    "language": "csharp",
+    "text": "Check origin, media, actual bytes and prompt.",
+    "explanation": "ASP.NET Core bounds actual input32KiB, validates trimmed1–4000 UTF-16 units and does not echo invalid values. Forwarded HTTPS is trusted only through explicit controlled-proxy configuration.",
+    "code": "public static async Task<string> ValidatePrompt(HttpContext context, GatewaySettings settings)\n{\n    var request = context.Request;\n    var scheme = settings.TrustProxy && request.Headers[\"X-Forwarded-Proto\"] == \"https\" ? \"https\" : request.Scheme;\n    var origin = request.Headers.Origin.ToString();\n    if (origin.Length > 0 && origin != $\"{scheme}://{request.Host}\") throw new InputError(403, \"Origin is not allowed.\");\n    if (!MediaTypeHeaderValue.TryParse(request.ContentType, out var media) || !string.Equals(media.MediaType, \"application/json\", StringComparison.OrdinalIgnoreCase))\n        throw new InputError(415, \"Use Content-Type: application/json.\");\n    using var body = new MemoryStream();\n    var buffer = new byte[8192];\n    int count;\n    while ((count = await request.Body.ReadAsync(buffer, context.RequestAborted)) > 0)\n    {\n        if (body.Length + count > 32768) throw new InputError(413, \"Request body exceeds 32 KiB.\");\n        body.Write(buffer, 0, count);\n    }\n    try\n    {\n        using var json = JsonDocument.Parse(body.ToArray());\n        if (json.RootElement.ValueKind != JsonValueKind.Object || !json.RootElement.TryGetProperty(\"prompt\", out var value) || value.ValueKind != JsonValueKind.String)\n            throw new InputError(422, \"Provide a prompt string of 1–4000 characters.\");\n        var prompt = value.GetString()!.Trim();\n        if (prompt.Length is < 1 or > 4000) throw new InputError(422, \"Provide a prompt string of 1–4000 characters.\");\n        return prompt;\n    }"
+  },
+  {
+    "number": 4,
+    "title": "Authenticate private handoff",
+    "source": "backend/GatewayApplication.cs",
+    "line": 99,
+    "language": "csharp",
+    "text": "Attach the configured token to a fixed upstream route.",
+    "explanation": "Only the gateway adds its own internal service token. Browser cookies, origin, authorization and supplied internal tokens are not forwarded. Python compares credentials with a timing-safe function.",
+    "code": "using var outgoing = new HttpRequestMessage(prompt is null ? HttpMethod.Get : HttpMethod.Post, path);\noutgoing.Headers.Add(\"X-Agent-Service-Token\", settings.Token);\n// Only our token and normalized JSON travel upstream; browser cookies/headers do not.\nif (prompt is not null) outgoing.Content = new StringContent(JsonSerializer.Serialize(new { prompt }), Encoding.UTF8, \"application/json\");\ntry\n{"
+  },
+  {
+    "number": 5,
+    "title": "Start real SDK runtime",
+    "source": "agent-service/app/agent_service.py",
+    "line": 25,
+    "language": "python",
+    "text": "Construct isolated options for the real Python SDK.",
+    "explanation": "Fresh temporary work/home/config directories, disabled tools/settings/skills/MCP/plugins/session persistence and a scrubbed child environment keep ambient settings out of each run. This is not OS/network sandboxing.",
+    "code": "def agent_options(self, base: Path | None = None) -> ClaudeAgentOptions:\n    # tools=[] removes built-ins; allowed_tools=[] alone is not a tool ban.\n    return ClaudeAgentOptions(\n        cwd=str(base / 'work') if base else None,\n        extra_args={'no-session-persistence': None},\n        tools=[], allowed_tools=[], permission_mode='dontAsk',\n        setting_sources=[], skills=[], plugins=[], mcp_servers={}, strict_mcp_config=True,\n        max_turns=self.settings.agent_max_turns,\n        model=self.settings.claude_model or None,\n        system_prompt=self.settings.agent_system_prompt or None,\n        env={**{key: '' for key in os.environ if key == 'AGENT_SERVICE_TOKEN' or (key.startswith(('ECS_', 'AWS_', 'GOOGLE_', 'GCLOUD_', 'CLOUDSDK_', 'ANTHROPIC_', 'CLAUDE_')) and key != 'CLAUDE_CODE_GIT_BASH_PATH')},\n             **({'HOME': str(base / 'home'), 'USERPROFILE': str(base / 'home'), 'CLAUDE_CONFIG_DIR': str(base / 'config')} if base else {}),\n             'ANTHROPIC_API_KEY': self.settings.anthropic_api_key.get_secret_value().strip(),\n             'ANTHROPIC_BASE_URL': 'https://api.anthropic.com',\n             'ENABLE_CLAUDEAI_MCP_SERVERS': 'false', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '1'},\n    )\n\ndef redact(self, text: str) -> str:\n    key = self.settings.anthropic_api_key.get_secret_value().strip()\n    return text.replace(key, '[redacted]') if key else text"
+  },
+  {
+    "number": 6,
+    "title": "Exchange messages with Claude",
+    "source": "agent-service/app/agent_service.py",
+    "line": 58,
+    "language": "python",
+    "text": "Consume the SDK query iterator.",
+    "explanation": "The CLI-backed Python SDK owns provider HTTPS. This excerpt shows the application boundary rather than invented provider transport code.",
+    "code": "source = self.query_fn(prompt=prompt, options=options)\nasync with aclosing(source):\n    async for message in source:\n        if isinstance(message, ResultMessage):\n            return self.result_data(message)\nraise RuntimeError('Agent ended without a final result')"
+  },
+  {
+    "number": 7,
+    "title": "Project safe SDK message",
+    "source": "agent-service/app/agent_service.py",
+    "line": 88,
+    "language": "python",
+    "text": "Select public lifecycle and text fields.",
+    "explanation": "Private thinking, paths, session IDs and tool payloads are omitted and key occurrences redacted. SDK messages are not guaranteed token deltas.",
+    "code": "        yield {'type': kind, 'summary': summary, 'data': data}\nif not found_result:\n    raise RuntimeError('Agent ended without a final result')"
+  },
+  {
+    "number": 8,
+    "title": "Emit Python SSE response",
+    "source": "agent-service/app/main.py",
+    "line": 144,
+    "language": "python",
+    "text": "Use the FastAPI SSE response lifecycle.",
+    "explanation": "The private response emits safe message/error/done events with heartbeat support. Disconnect cancellation closes the async generator and owned SDK work. Python bounds execution to180 seconds.",
+    "code": "                yield ServerSentEvent(event='message', data=message)\n        yield ServerSentEvent(event='done', data={'status': 'complete'})\nexcept Exception:\n    yield ServerSentEvent(event='error', data={'detail': FAILURE})"
+  },
+  {
+    "number": 9,
+    "title": "Flush chunks through .NET",
+    "source": "backend/GatewayApplication.cs",
+    "line": 116,
+    "language": "csharp",
+    "text": "Relay progressively with response-headers-first HTTP.",
+    "explanation": "The gateway flushes every received chunk rather than buffering an answer. A linked185-second token cancels on browser disconnect and closes the private upstream connection.",
+    "code": "    await context.Response.StartAsync(deadline.Token);\n    await using var source = await response.Content.ReadAsStreamAsync(deadline.Token);\n    var buffer = new byte[16384];\n    int count;\n    while ((count = await source.ReadAsync(buffer, deadline.Token)) > 0)\n    {\n        await context.Response.Body.WriteAsync(buffer.AsMemory(0, count), deadline.Token);\n        await context.Response.Body.FlushAsync(deadline.Token);\n    }\n}\ncatch (Exception error) when (error is HttpRequestException or OperationCanceledException or IOException)"
+  },
+  {
+    "number": 10,
+    "title": "Normalize final result",
+    "source": "agent-service/app/agent_service.py",
+    "line": 46,
+    "language": "python",
+    "text": "Preserve answer, metrics and failure semantics.",
+    "explanation": "A non-success SDK subtype remains an error regardless of a raw flag. Cost stays null when not reported.",
+    "code": "def result_data(self, message: ResultMessage) -> dict:\n    return {\n        'result': self.redact(message.result or ''),\n        'num_turns': message.num_turns,\n        'duration_ms': message.duration_ms,\n        'total_cost_usd': message.total_cost_usd,\n        'is_error': message.is_error or message.subtype != 'success',\n    }\n"
+  },
+  {
+    "number": 11,
+    "title": "Require result and done",
+    "source": "frontend/src/app/api.ts",
+    "line": 136,
+    "language": "typescript",
+    "text": "Reject malformed or incomplete streams.",
+    "explanation": "The parser handles fragmented UTF-8, CRLF, multiline data and bounded frames. The history cap is independent of final result processing.",
+    "code": "if (!completed || !finalReceived)\n  throw new Error(\n    \"The connection ended before the agent finished. Please try again.\",\n  );"
+  },
+  {
+    "number": 12,
+    "title": "Render safe colored Markdown",
+    "source": "frontend/src/app/code.component.ts",
+    "line": 17,
+    "language": "typescript",
+    "text": "Color code and sanitize answer HTML.",
+    "explanation": "Highlight.js supports C#, Python and TypeScript snippets. DOMPurify removes active content before Angular HTML insertion; unknown languages are escaped.",
+    "code": "export function renderMarkdown(text:string){\n  const markdown=new Marked({renderer:{code:({text,lang})=>`<pre><code class=\"hljs\">${highlight(text,(lang||'').split(/\\s/)[0])}</code></pre>`,image:()=>''}});\n  return DOMPurify.sanitize(markdown.parse(text,{async:false}),{FORBID_TAGS:['script','style','iframe','img','video','audio','form'],FORBID_ATTR:['style']});\n}"
+  },
+  {
+    "number": 13,
+    "title": "Complete result plus done",
+    "source": "agent-service/app/main.py",
+    "line": 145,
+    "language": "python",
+    "text": "Send done only after SDK completion.",
+    "explanation": "The same stream reaches Angular through .NET. Completion does not override a failed SDK result.",
+    "code": "        yield ServerSentEvent(event='done', data={'status': 'complete'})\nexcept Exception:\n    yield ServerSentEvent(event='error', data={'detail': FAILURE})"
+  },
+  {
+    "number": 14,
+    "title": "Send safe stream failure",
+    "source": "agent-service/app/main.py",
+    "line": 147,
+    "language": "python",
+    "text": "Emit a safe error without done.",
+    "explanation": "Provider diagnostics remain private. Deadline or disconnection cancellation closes the SDK iterator and temporary runtime.",
+    "code": "yield ServerSentEvent(event='error', data={'detail': FAILURE})\n"
+  },
+  {
+    "number": 15,
+    "title": "Show recoverable error",
+    "source": "frontend/src/app/lab-state.ts",
+    "line": 48,
+    "language": "typescript",
+    "text": "Show feedback and release the run lock.",
+    "explanation": "Cancel aborts fetch; finally clears timers and releases controls. Lesson state stays available for inspection and retry.",
+    "code": "}catch(error){const detail=controller.signal.aborted?'Request cancelled or timed out.':error instanceof Error?error.message:'The request failed.';this.error.set(detail);this.notice.set(detail);this.status.set('error');}\nfinally{clearInterval(ticker);clearTimeout(timeout);this.active=null;this.locked=false;this.elapsed.set(Math.round(performance.now()-started));}"
+  },
+  {
+    "number": 16,
+    "title": "Reject missing model key",
+    "source": "agent-service/app/main.py",
+    "line": 125,
+    "language": "python",
+    "text": "Stop before creating an SDK run.",
+    "explanation": "Only Python loads the model key from agent-service/.env. Missing keys return query503 or an SSE error without done through the gateway. Health reports presence, not provider access.",
+    "code": "if not settings.api_key_configured:\n    raise HTTPException(503, MISSING_KEY)\ntry:\n    return await query_until_disconnected(request, agent, body.prompt)"
+  }
+]

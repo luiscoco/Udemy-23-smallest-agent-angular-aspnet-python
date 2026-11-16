@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/.angular
+**/bin
+**/obj
+**/artifacts
+**/.env*
+**/__pycache__
+**/.pytest_cache
+.venv
+.tools
+.git
+verification
